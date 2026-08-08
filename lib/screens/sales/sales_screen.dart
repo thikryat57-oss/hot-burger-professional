@@ -517,7 +517,6 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 20),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 170,
-        minCrossAxisSpacing: 10,
         mainAxisSpacing: 10,
         childAspectRatio: 0.92,
       ),

@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../../core/constants/constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../providers/app_provider.dart';
+import '../../models/models.dart';
 import '../home/home_screen.dart';
 
 class LoginScreen extends StatefulWidget {

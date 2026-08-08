@@ -6,7 +6,6 @@ import '../categories/categories_screen.dart';
 import '../expenses/expenses_screen.dart';
 import '../auth/login_screen.dart';
 import '../products/products_screen.dart';
-import '../products/recipe_management_screen.dart';
 import '../purchases/purchases_list_screen.dart';
 import '../reports/profit_report_screen.dart';
 import '../reports/reports_screen.dart';
@@ -48,7 +47,7 @@ class MoreScreen extends StatelessWidget {
             if (context.read<AppProvider>().canManageCatalog()) _MenuItem('المنتجات', 'إدارة قائمة الطعام والأسعار', Icons.fastfood_outlined, AppTheme.primaryColor, const ProductsScreen()),
             if (context.read<AppProvider>().canManageCatalog()) _MenuItem('التصنيفات', 'تنظيم المنتجات داخل أقسام', Icons.category_outlined, AppTheme.infoColor, const CategoriesScreen()),
             if (context.read<AppProvider>().canManageFinance()) _MenuItem('المصروفات', 'تسجيل ومراجعة المصروفات', Icons.account_balance_wallet_outlined, AppTheme.warningColor, const ExpensesScreen()),
-            if (context.read<AppProvider>().canManageCatalog()) _MenuItem('الوصفات', 'ربط المنتجات بالمواد الخام', Icons.receipt_long_outlined, AppTheme.successColor, const RecipeManagementScreen()),
+            if (context.read<AppProvider>().canManageCatalog()) _MenuItem('الوصفات', 'اختر المنتج لإدارة وربط مكونات الوصفة', Icons.receipt_long_outlined, AppTheme.successColor, const ProductsScreen()),
           ]),
           const SizedBox(height: 22),
           _sectionTitle('المشتريات والموردون'),
