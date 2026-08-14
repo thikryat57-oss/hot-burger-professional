@@ -24,21 +24,43 @@ class _SalesScreenState extends State<SalesScreen> {
   Customer? _selectedCustomer;
 
   late Future<List<Category>> _categoriesFuture;
+  Shift? _openShift;
+  bool _shiftLoading = true;
+  bool _isSavingInvoice = false;
 
   @override
   void initState() {
     super.initState();
     final appProvider = context.read<AppProvider>();
     _categoriesFuture = appProvider.getCategories();
+    _refreshOpenShift();
     _loadProducts();
+  }
+
+  Future<void> _refreshOpenShift() async {
+    try {
+      final shift = await context.read<AppProvider>().getCurrentUserOpenShift();
+      if (!mounted) return;
+      setState(() {
+        _openShift = shift;
+        _shiftLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _shiftLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('تعذر تحميل حالة الوردية: ${e.toString().replaceFirst('Exception: ', '')}'), backgroundColor: AppTheme.errorColor),
+      );
+    }
   }
 
   Future<void> _loadProducts() async {
     final appProvider = context.read<AppProvider>();
     final products = await appProvider.getProducts();
+    final availableProducts = products.where((p) => p.isAvailable).toList();
     if (mounted) {
       setState(() {
-        _products = products.where((p) => p.isAvailable).toList();
+        _products = availableProducts;
       });
     }
   }
@@ -55,6 +77,7 @@ class _SalesScreenState extends State<SalesScreen> {
   }
 
   void _addToCart(Product product) {
+    if (_isSavingInvoice) return;
     setState(() {
       final existingIndex = _cart.indexWhere((c) => c.productId == product.id);
       if (existingIndex >= 0) {
@@ -71,12 +94,14 @@ class _SalesScreenState extends State<SalesScreen> {
   }
 
   void _removeFromCart(int productId) {
+    if (_isSavingInvoice) return;
     setState(() {
       _cart.removeWhere((c) => c.productId == productId);
     });
   }
 
   void _updateQuantity(int productId, int quantity) {
+    if (_isSavingInvoice) return;
     setState(() {
       final index = _cart.indexWhere((c) => c.productId == productId);
       if (index >= 0) {
@@ -277,106 +302,96 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
   );
 
   Future<void> _saveInvoice() async {
+    if (_isSavingInvoice) return;
     if (_cart.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('السلة فارغة')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('السلة فارغة')));
+      }
       return;
     }
 
-    final checkout = await _showCheckoutDialog();
-    if (checkout == null) return;
-    final discount = checkout['discount'] ?? 0;
-    final paid = checkout['paid'] ?? _totalAmount;
-    final change = checkout['change'] ?? 0;
     final appProvider = context.read<AppProvider>();
-    final invoiceNumber = await appProvider.getNextInvoiceNumber();
-
-    final invoice = Invoice(
-      invoiceNumber: invoiceNumber,
-      subtotalAmount: _subtotalAmount,
-      discountAmount: discount,
-      totalAmount: (_subtotalAmount - discount).clamp(0, double.infinity).toDouble(),
-      paidAmount: paid,
-      changeAmount: change,
-      status: 'completed',
-      paymentMethod: _selectedPaymentMethod,
-      customerId: _selectedCustomer?.id,
-    );
-
     try {
-      final invoiceId = await appProvider.createInvoice(invoice, _cart);
+      final shift = await appProvider.getCurrentUserOpenShift();
+      if (!mounted) return;
+      if (shift == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('يجب فتح وردية أولاً')));
+        await _refreshOpenShift();
+        return;
+      }
 
-      if (mounted) {
-        // Check for low stock warning
-        final savedInvoice = await appProvider.getInvoiceById(invoiceId);
-        if (savedInvoice?.notes != null && savedInvoice!.notes!.startsWith('تحذير:')) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '${savedInvoice.notes}\nتم حفظ الفاتورة بنجاح',
-              ),
-              backgroundColor: AppTheme.warningColor,
-              duration: const Duration(seconds: 5),
-              action: SnackBarAction(
-                label: 'طباعة',
-                textColor: Colors.white,
-                onPressed: () {
-                  PdfHelper.showPrintOptions(context, savedInvoice);
-                },
-              ),
-            ),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text('تم حفظ الفاتورة بنجاح'),
-              backgroundColor: AppTheme.successColor,
-              duration: const Duration(seconds: 3),
-              action: SnackBarAction(
-                label: 'طباعة',
-                textColor: Colors.white,
-                onPressed: () {
-                  if (savedInvoice != null) {
-                    PdfHelper.showPrintOptions(context, savedInvoice);
-                  }
-                },
-              ),
-            ),
-          );
-        }
-        setState(() {
-          _cart.clear();
-          _selectedPaymentMethod = 'cash';
-          _discountAmount = 0;
-          _selectedCustomer = null;
-        });
-        _loadProducts();
-      }
+      // Keep the confirmation route independent from the save/loading state.
+      // The underlying screen is locked only after the user confirms the sale.
+      final checkout = await _showCheckoutDialog();
+      if (checkout == null || !mounted) return;
+
+      setState(() => _isSavingInvoice = true);
+      final discount = checkout['discount'] ?? 0;
+      final paid = checkout['paid'] ?? _totalAmount;
+      final change = checkout['change'] ?? 0;
+      final invoiceNumber = await appProvider.getNextInvoiceNumber();
+      if (!mounted) return;
+
+      final invoice = Invoice(
+        invoiceNumber: invoiceNumber,
+        subtotalAmount: _subtotalAmount,
+        discountAmount: discount,
+        totalAmount: (_subtotalAmount - discount).clamp(0, double.infinity).toDouble(),
+        paidAmount: paid,
+        changeAmount: change,
+        status: 'completed',
+        paymentMethod: _selectedPaymentMethod,
+        customerId: _selectedCustomer?.id,
+      );
+
+      final invoiceId = await appProvider.createInvoice(invoice, _cart);
+      if (!mounted) return;
+      final savedInvoice = await appProvider.getInvoiceById(invoiceId);
+      if (!mounted) return;
+
+      final warning = savedInvoice?.notes;
+      final message = warning != null && warning.startsWith('تحذير:')
+          ? '$warning\nتم حفظ الفاتورة بنجاح'
+          : 'تم حفظ الفاتورة بنجاح';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: warning != null && warning.startsWith('تحذير:') ? AppTheme.warningColor : AppTheme.successColor,
+          duration: const Duration(seconds: 4),
+          action: savedInvoice == null
+              ? null
+              : SnackBarAction(
+                  label: 'طباعة',
+                  textColor: Colors.white,
+                  onPressed: () {
+                    if (mounted) PdfHelper.showPrintOptions(context, savedInvoice);
+                  },
+                ),
+        ),
+      );
+      setState(() {
+        _cart.clear();
+        _selectedPaymentMethod = 'cash';
+        _discountAmount = 0;
+        _selectedCustomer = null;
+      });
+      await _loadProducts();
     } catch (e) {
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (dialogContext) => AlertDialog(
-            title: const Text('خطأ في إتمام البيع'),
-            content: Text(
-              e.toString().replaceAll('Exception: ', ''),
-              style: TextStyle(color: AppTheme.errorColor),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext),
-                child: const Text('حسنًا'),
-              ),
-            ],
-          ),
-        );
-      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('خطأ في إتمام البيع: ${e.toString().replaceFirst('Exception: ', '')}'),
+          backgroundColor: AppTheme.errorColor,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    } finally {
+      if (mounted && _isSavingInvoice) setState(() => _isSavingInvoice = false);
     }
   }
 
   Future<void> _parkCurrentOrder() async {
-    if (_cart.isEmpty) return;
+    if (_cart.isEmpty || _isSavingInvoice) return;
     final nameController = TextEditingController();
     final name = await showDialog<String>(
       context: context,
@@ -514,11 +529,12 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
     }
 
     return GridView.builder(
-      padding: const EdgeInsets.fromLTRB(14, 14, 14, 20),
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 18),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 170,
+        maxCrossAxisExtent: 184,
         mainAxisSpacing: 10,
-        childAspectRatio: 0.92,
+        crossAxisSpacing: 10,
+        mainAxisExtent: 174,
       ),
       itemCount: _filteredProducts.length,
       itemBuilder: (context, index) => _buildProductCard(_filteredProducts[index]),
@@ -616,7 +632,10 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
       children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-          color: AppTheme.primaryColor.withOpacity(0.06),
+          decoration: BoxDecoration(
+            color: AppTheme.primaryColor.withOpacity(0.06),
+            border: Border(bottom: BorderSide(color: AppTheme.primaryColor.withOpacity(0.10))),
+          ),
           child: Row(
             children: [
               const Icon(Icons.shopping_cart_rounded, size: 21, color: AppTheme.primaryColor),
@@ -640,19 +659,37 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
         ),
         Expanded(
           child: _cart.isEmpty
-              ? const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.shopping_basket_outlined, size: 52, color: AppTheme.textHint),
-                      SizedBox(height: 8),
-                      Text('السلة فارغة', style: TextStyle(color: AppTheme.textSecondary)),
-                      SizedBox(height: 4),
-                      Text('اضغط على المنتج لإضافته', style: TextStyle(color: AppTheme.textHint, fontSize: 12)),
-                    ],
+              ? Center(
+                  child: Container(
+                    margin: const EdgeInsets.all(18),
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
+                    decoration: BoxDecoration(
+                      color: AppTheme.backgroundColor,
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: AppTheme.textHint.withOpacity(0.16)),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 68,
+                          height: 68,
+                          decoration: BoxDecoration(
+                            color: AppTheme.primaryColor.withOpacity(0.10),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.shopping_basket_outlined, size: 34, color: AppTheme.primaryColor),
+                        ),
+                        const SizedBox(height: 14),
+                        const Text('السلة فارغة', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                        const SizedBox(height: 5),
+                        const Text('اضغط على المنتج لإضافته', style: TextStyle(color: AppTheme.textSecondary, fontSize: 12)),
+                      ],
+                    ),
                   ),
                 )
               : ListView.builder(
+                  physics: _isSavingInvoice ? const NeverScrollableScrollPhysics() : null,
                   padding: const EdgeInsets.all(8),
                   itemCount: _cart.length,
                   itemBuilder: (context, index) {
@@ -681,14 +718,14 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
                             IconButton(
                               tooltip: 'إنقاص',
                               icon: const Icon(Icons.remove_circle_outline, size: 21),
-                              onPressed: () => _updateQuantity(item.productId, item.quantity - 1),
+                              onPressed: _isSavingInvoice ? null : () => _updateQuantity(item.productId, item.quantity - 1),
                               visualDensity: VisualDensity.compact,
                             ),
                             Text('${item.quantity}', style: const TextStyle(fontWeight: FontWeight.w800)),
                             IconButton(
                               tooltip: 'زيادة',
                               icon: const Icon(Icons.add_circle_outline, size: 21, color: AppTheme.primaryColor),
-                              onPressed: () => _updateQuantity(item.productId, item.quantity + 1),
+                              onPressed: _isSavingInvoice ? null : () => _updateQuantity(item.productId, item.quantity + 1),
                               visualDensity: VisualDensity.compact,
                             ),
                             SizedBox(
@@ -700,7 +737,7 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
                                   IconButton(
                                     tooltip: 'حذف',
                                     icon: const Icon(Icons.close, size: 17, color: AppTheme.errorColor),
-                                    onPressed: () => _removeFromCart(item.productId),
+                                    onPressed: _isSavingInvoice ? null : () => _removeFromCart(item.productId),
                                     padding: EdgeInsets.zero,
                                     constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                                   ),
@@ -725,6 +762,7 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
       decoration: BoxDecoration(
         color: AppTheme.cardBackground,
+        border: Border(top: BorderSide(color: AppTheme.primaryColor.withOpacity(0.12))),
         boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 12, offset: const Offset(0, -3))],
       ),
       child: Column(
@@ -750,7 +788,7 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _cart.isEmpty ? null : _parkCurrentOrder,
+                  onPressed: _cart.isEmpty || _isSavingInvoice ? null : _parkCurrentOrder,
                   icon: const Icon(Icons.pause_circle_outline, size: 18),
                   label: const Text('تعليق'),
                 ),
@@ -758,7 +796,7 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
               const SizedBox(width: 7),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _cart.isEmpty ? null : () async {
+                  onPressed: _cart.isEmpty || _isSavingInvoice ? null : () async {
                     final result = await _showDiscountDialog();
                     if (result != null && mounted) setState(() => _discountAmount = result);
                   },
@@ -785,12 +823,14 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
-              onPressed: _cart.isEmpty ? null : _saveInvoice,
+              onPressed: _cart.isEmpty || _isSavingInvoice ? null : _saveInvoice,
               icon: const Icon(Icons.check_circle_outline),
-              label: Text(totalItems > 0 ? 'إتمام البيع • ${_totalAmount.toStringAsFixed(2)} ج.س' : 'إتمام البيع'),
+              label: Text(_isSavingInvoice ? 'جارٍ حفظ البيع...' : totalItems > 0 ? 'إتمام البيع • ${_totalAmount.toStringAsFixed(2)} ج.س' : 'إتمام البيع'),
               style: FilledButton.styleFrom(
-                backgroundColor: AppTheme.successColor,
-                minimumSize: const Size.fromHeight(46),
+                  backgroundColor: AppTheme.successColor,
+                  disabledBackgroundColor: AppTheme.textHint.withOpacity(0.22),
+                  disabledForegroundColor: AppTheme.textSecondary,
+                  minimumSize: const Size.fromHeight(46),
               ),
             ),
           ),
@@ -804,7 +844,7 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
     return Expanded(
       child: ChoiceChip(
         selected: selected,
-        onSelected: (_) => setState(() => _selectedPaymentMethod = value),
+        onSelected: _isSavingInvoice ? null : (_) => setState(() => _selectedPaymentMethod = value),
         avatar: Icon(icon, size: 15, color: selected ? Colors.white : AppTheme.primaryColor),
         label: Text(label),
         labelStyle: TextStyle(
@@ -820,9 +860,50 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
   }
 
   void _clearCart() {
+    if (_isSavingInvoice) return;
     setState(() {
       _cart.clear();
     });
+  }
+
+  Widget _buildShiftBanner() {
+    if (_shiftLoading) {
+      return const Padding(
+        padding: EdgeInsets.fromLTRB(12, 10, 12, 0),
+        child: LinearProgressIndicator(minHeight: 2),
+      );
+    }
+    final shift = _openShift;
+    final isOpen = shift != null;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: (isOpen ? AppTheme.successColor : AppTheme.warningColor).withOpacity(0.10),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: (isOpen ? AppTheme.successColor : AppTheme.warningColor).withOpacity(0.20)),
+      ),
+      child: Row(
+        children: [
+          Icon(isOpen ? Icons.lock_open_rounded : Icons.lock_clock_outlined, color: isOpen ? AppTheme.successColor : AppTheme.warningColor, size: 20),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(
+              isOpen ? 'الوردية الحالية: ${shift!.userName}' : 'لا توجد وردية مفتوحة',
+              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12),
+            ),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(minimumSize: const Size(0, 34), padding: const EdgeInsets.symmetric(horizontal: 10)),
+            onPressed: _isSavingInvoice ? null : () async {
+              await Navigator.push(context, MaterialPageRoute(builder: (_) => const ShiftManagementScreen()));
+              if (mounted) _refreshOpenShift();
+            },
+            child: Text(isOpen ? 'إدارة الوردية' : 'فتح وردية'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -848,7 +929,7 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
           ),
           if (_cart.isNotEmpty)
             TextButton.icon(
-              onPressed: _clearCart,
+              onPressed: _isSavingInvoice ? null : _clearCart,
               icon: const Icon(Icons.delete_outline, color: Colors.white, size: 20),
               label: const Text('مسح', style: TextStyle(color: Colors.white)),
             ),
@@ -856,37 +937,17 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
       ),
       body: Column(
         children: [
-          FutureBuilder<Shift?>(
-            future: context.read<AppProvider>().getCurrentUserOpenShift(),
-            builder: (context, snapshot) {
-              final shift = snapshot.data;
-              if (shift != null) return const SizedBox.shrink();
-              return Container(
-                margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppTheme.warningColor.withOpacity(0.10),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Row(children: [
-                  const Icon(Icons.lock_clock_outlined, color: AppTheme.warningColor),
-                  const SizedBox(width: 10),
-                  const Expanded(child: Text('لا توجد وردية مفتوحة. افتح وردية قبل تسجيل أي بيع.', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12))),
-                  TextButton(
-                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ShiftManagementScreen())),
-                    child: const Text('فتح وردية'),
-                  ),
-                ]),
-              );
-            },
-          ),
+          _buildShiftBanner(),
 
           // Search bar
           Padding(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
             child: TextField(
               decoration: InputDecoration(
                 hintText: 'البحث عن منتج...',
+                filled: true,
+                fillColor: AppTheme.backgroundColor,
+                contentPadding: const EdgeInsets.symmetric(vertical: 12),
                 prefixIcon: const Icon(Icons.search, color: AppTheme.textSecondary),
                 suffixIcon: _searchQuery.isNotEmpty
                     ? IconButton(
@@ -894,6 +955,18 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
                         onPressed: () => setState(() => _searchQuery = ''),
                       )
                     : null,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide(color: AppTheme.textHint.withOpacity(0.16)),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: BorderSide(color: AppTheme.textHint.withOpacity(0.16)),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: const BorderSide(color: AppTheme.primaryColor, width: 1.4),
+                ),
               ),
               onChanged: (value) => setState(() => _searchQuery = value),
             ),
@@ -905,10 +978,10 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
             builder: (context, snapshot) {
               final categories = snapshot.data ?? [];
               return SizedBox(
-                height: 50,
+                height: 43,
                 child: ListView(
                   scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
                   children: [
                     FilterChip(
                       label: const Text('الكل'),
@@ -947,10 +1020,11 @@ Widget _summaryRow(String label, double value, {bool emphasized = false}) => Pad
                 final products = _buildProductsGrid();
                 final cart = _buildCartPanel();
                 if (compact) {
+                  final cartFlex = _cart.isEmpty ? 3 : 6;
                   return Column(
                     children: [
-                      Expanded(child: products),
-                      SizedBox(height: 360, child: cart),
+                      Expanded(flex: 10 - cartFlex, child: products),
+                      Expanded(flex: cartFlex, child: cart),
                     ],
                   );
                 }

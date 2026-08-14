@@ -204,6 +204,7 @@ class DatabaseHelper {
 
     // Version 4 tables
     await _createVersion4Tables(db);
+    await _createVersion6Tables(db);
     await _createVersion7Indexes(db);
     await _createVersion8Tables(db);
     await _createVersion9Tables(db);

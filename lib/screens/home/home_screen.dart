@@ -31,6 +31,11 @@ class HomeScreen extends StatelessWidget {
             child: IndexedStack(index: index, children: screens),
           ),
           bottomNavigationBar: NavigationBar(
+            height: 68,
+            elevation: 3,
+            backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+            indicatorColor: AppTheme.primaryColor.withOpacity(0.14),
+            labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
             selectedIndex: index,
             onDestinationSelected: appProvider.setIndex,
             destinations: const [
